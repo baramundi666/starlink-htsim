@@ -19,7 +19,8 @@ int main() {
         eventlist,
         speedFromMbps((uint64_t)10000), memFromPkt(20), // uplinks
         speedFromMbps((uint64_t)10000), memFromPkt(20), // downlinks
-        speedFromMbps((uint64_t)10000), memFromPkt(20)  // ISLs
+        speedFromMbps((uint64_t)10000), memFromPkt(20),  // ISLs
+        8, 66
     );
 
     City london(51.5, 0.0, constellation);
