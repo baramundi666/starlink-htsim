@@ -36,11 +36,25 @@ public:
     // shape; this is good enough to explore connectivity/latency trends
     // but is NOT a validated reproduction of the paper's partial-
     // deployment numbers -- treat it as approximate.
+    // Keep the original constructor signature for the rest of htsim
+    // (notably XcpNetworkTopology).  Do not add the new experiment-only
+    // defaults to this signature, otherwise existing 7/9-argument calls are
+    // compiled as calls to the newer 12-argument symbol and old build targets
+    // fail at link time.
     Constellation(EventList& eventlist,
 		  linkspeed_bps uplinkbitrate, mem_b uplinkqueuesize,
 		  linkspeed_bps dowlinkbitrate, mem_b downlinkqueuesize,
 		  linkspeed_bps islbitrate, mem_b islqueuesize,
 		  int num_planes = 24, int sats_per_plane = 66);
+
+    // Extended constructor used only by starlink_exp benchmark runs.
+    Constellation(EventList& eventlist,
+		  linkspeed_bps uplinkbitrate, mem_b uplinkqueuesize,
+		  linkspeed_bps dowlinkbitrate, mem_b downlinkqueuesize,
+		  linkspeed_bps islbitrate, mem_b islqueuesize,
+		  int num_planes, int sats_per_plane,
+		  int orbital_slots, bool adjacent_sats,
+		  int sat_offset);
     Satellite** sats() {return _sats;}
     int num_sats() const {return _num_sats;}
     inline Link& activate_link(Node& src, Node& dst, LinkType linktype) {
@@ -69,6 +83,11 @@ private:
     linkspeed_bps _linkbitrate[3];
     mem_b _linkqueuesize[3];
     int _num_sats;
+    int _num_planes;
+    int _sats_per_plane;
+    int _orbital_slots;
+    bool _adjacent_sats;
+    int _sat_offset;
     BinaryHeap heap;
     Node* _route_src;
 };

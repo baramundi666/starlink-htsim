@@ -39,6 +39,9 @@ class City : public Node {
     void update_coordinates(simtime_picosec time);
     void update_uplinks(simtime_picosec time);
     Route *find_route(City& dst, simtime_picosec time);
+    int active_uplink_count() const;
+    int inactive_sat_count() const;
+    double nearest_sat_distance() const;
  private:
     double _latitude;
     double _longitude;

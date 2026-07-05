@@ -16,6 +16,7 @@ using namespace std;
 //#endif
 
 #include <vector>
+#include <iomanip>
 
 #include "loggers.h"
 
@@ -29,11 +30,11 @@ struct eqint
 
 int main(int argc, char** argv){
     if (argc < 2){
-	printf("Usage %s filename [-show|-verbose|-ascii]\n", argv[0]);
+	printf("Usage %s filename [-show|-verbose|-ascii|-csv|-queue-csv]\n", argv[0]);
 	return 1;
     }
 
-    int show = 0, verbose = 0, ascii = 0;
+    int show = 0, verbose = 0, ascii = 0, csv = 0, queue_csv = 0;
 
     if ((argc>2 && !strcmp(argv[2], "-show"))
 	|| (argc>3 && !strcmp(argv[3], "-show")))
@@ -43,12 +44,25 @@ int main(int argc, char** argv){
 	|| (argc>3 && !strcmp(argv[3], "-ascii")))
 	ascii = 1;
 
+    if ((argc>2 && !strcmp(argv[2], "-csv"))
+	|| (argc>3 && !strcmp(argv[3], "-csv")))
+	csv = 1;
+
+    if ((argc>2 && !strcmp(argv[2], "-queue-csv"))
+	|| (argc>3 && !strcmp(argv[3], "-queue-csv")))
+	queue_csv = 1;
+
     if ((argc>2 && !strcmp(argv[2], "-verbose"))
 	|| (argc>3 && !strcmp(argv[3], "-verbose")))
 	verbose = 1;
 
-    if (ascii && (show || verbose)) {
-	    perror("Use -ascii by itself, not with -show or -verbose!\n");
+    if ((ascii || csv || queue_csv) && (show || verbose)) {
+	    perror("Use -ascii/-csv/-queue-csv by itself, not with -show or -verbose!\n");
+	    exit(1);
+    }
+
+    if ((ascii ? 1 : 0) + (csv ? 1 : 0) + (queue_csv ? 1 : 0) > 1) {
+	    perror("Use only one of -ascii, -csv or -queue-csv!\n");
 	    exit(1);
     }
 
@@ -172,6 +186,31 @@ int main(int argc, char** argv){
 	TYPE = 0; EV = 0;
     } else if (argc>2&&!strcmp(argv[2], "-all")) {
 	TYPE = -1; EV = -1;
+    }
+
+    if (csv || queue_csv) {
+	cout << "time_s,type,id,event,val1,val2,val3" << endl;
+	for (int i = 0; i < numRecords; i++) {
+	    if (!timeRec[i])
+		continue;
+	    if (queue_csv && typeRec[i] != Logger::QUEUE_EVENT
+		&& typeRec[i] != Logger::QUEUE_RECORD
+		&& typeRec[i] != Logger::QUEUE_APPROX)
+		continue;
+	    cout << std::fixed << std::setprecision(9) << timeRec[i] << ","
+		 << typeRec[i] << "," << idRec[i] << "," << evRec[i] << ","
+		 << std::setprecision(12) << val1Rec[i] << ","
+		 << val2Rec[i] << "," << val3Rec[i] << endl;
+	}
+	delete[] timeRec;
+	delete[] typeRec;
+	delete[] idRec;
+	delete[] evRec;
+	delete[] val1Rec;
+	delete[] val2Rec;
+	delete[] val3Rec;
+	delete[] line;
+	exit(0);
     }
 
     for (int i=0;i<numRecords;i++){
@@ -305,6 +344,19 @@ int main(int argc, char** argv){
     }
 
     sort(rates.begin(), rates.end());
+
+    if (rates.empty()) {
+	printf("No matching records for selected type/event.\n");
+	delete[] timeRec;
+	delete[] typeRec;
+	delete[] idRec;
+	delete[] evRec;
+	delete[] val1Rec;
+	delete[] val2Rec;
+	delete[] val3Rec;
+	delete[] line;
+	return 0;
+    }
   
     double total = 0;
     int cnt = rates.size()/10;
@@ -318,9 +370,9 @@ int main(int argc, char** argv){
 	if (i>cnt&&!show)
 	    break;
     }
+    double avg2 = flow_rates2.empty() ? 0.0 : mean_rate2/flow_rates2.size();
     printf("Mean of lower 10pc (%d entries) is %f total mean %f  mean2 %f\n", 
-	   cnt, total/cnt, mean_rate/rates.size(), 
-	   mean_rate2/flow_rates2.size());
+	   cnt, total/cnt, mean_rate/rates.size(), avg2);
   
     delete[] timeRec;
     delete[] typeRec;
@@ -328,5 +380,6 @@ int main(int argc, char** argv){
     delete[] evRec;
     delete[] val1Rec;
     delete[] val2Rec;
+    delete[] val3Rec;
     delete[] line;
 }

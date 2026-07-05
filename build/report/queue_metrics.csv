@@ -1,0 +1,16 @@
+case,group,queue_file,queue_samples,max_queue_bytes,mean_lastq_bytes,max_lastq_bytes,max_queue_buffer_bytes,max_last_dropped,max_cumulative_drop,max_cumulative_arrivals
+A_sanity_2sat_adjacent,A sanity,,0,,,,,,,
+B_1plane_16sat_adjacent,B small scale,,0,,,,,,,
+B_1plane_4sat_adjacent,B small scale,,0,,,,,,,
+B_1plane_8sat_adjacent,B small scale,,0,,,,,,,
+B_2planes_16sat,B small scale,,0,,,,,,,
+B_4planes_16sat,B small scale,,0,,,,,,,
+C_NY_Seattle_12planes,C NY-Seattle,,0,,,,,,,
+C_NY_Seattle_24planes,C NY-Seattle,,0,,,,,,,
+C_NY_Seattle_6planes,C NY-Seattle,,0,,,,,,,
+D_London_NY_12planes_ping,D London-NY ping,/Users/lukasz/Documents/Repositories/starlink-htsim/build/results/D_London_NY_12planes_ping.queue_ascii.txt,8619987,1500.0,146.12545239337368,1500.0,30000.0,1500.0,0.0,0.0
+D_London_NY_24planes_ping,D London-NY ping,/Users/lukasz/Documents/Repositories/starlink-htsim/build/results/D_London_NY_24planes_ping.queue_ascii.txt,12489726,1500.0,191.389306698962,1500.0,30000.0,1500.0,0.0,0.0
+D_London_NY_6planes_ping,D London-NY ping,/Users/lukasz/Documents/Repositories/starlink-htsim/build/results/D_London_NY_6planes_ping.queue_ascii.txt,5998461,1500.0,31.817911294246976,1500.0,30000.0,1500.0,0.0,0.0
+E_NY_Seattle_24planes_isl1000,E ISL sensitivity,/Users/lukasz/Documents/Repositories/starlink-htsim/build/results/E_NY_Seattle_24planes_isl1000.queue_ascii.txt,19016643,1500.0,20.28031445928706,1500.0,30000.0,1500.0,0.0,0.0
+E_NY_Seattle_24planes_isl10000,E ISL sensitivity,/Users/lukasz/Documents/Repositories/starlink-htsim/build/results/E_NY_Seattle_24planes_isl10000.queue_ascii.txt,19016643,1500.0,20.279131285159004,1500.0,30000.0,1500.0,0.0,0.0
+E_NY_Seattle_24planes_isl5000,E ISL sensitivity,/Users/lukasz/Documents/Repositories/starlink-htsim/build/results/E_NY_Seattle_24planes_isl5000.queue_ascii.txt,19016643,1500.0,20.279367919984615,1500.0,30000.0,1500.0,0.0,0.0

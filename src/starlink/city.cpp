@@ -2,9 +2,20 @@
 
 #include <math.h>
 #include <algorithm>
+#include <limits>
+#include <vector>
 #include "constellation.h"
 #include "isl.h"
 #include "city.h"
+
+#ifdef STARLINK_VERBOSE_DEBUG
+#define STARLINK_DEBUG_LOG(x) do { x; } while (0)
+#else
+#define STARLINK_DEBUG_LOG(x) do { } while (0)
+#endif
+
+using std::cout;
+using std::endl;
 
 // assume 57 degrees from vertical
 //#define MAXDIST 1010
@@ -26,7 +37,7 @@ bool inactive_sat_cmp(InactiveSat* s1, InactiveSat* s2) {
 
 // latitude and longitude are given in degrees
 City::City(double latitude, double longitude, Constellation& constellation)
-    : _constellation(constellation)
+    : _constellation(constellation), _logged(0)
 {
 #ifdef XCP_STATIC_NETWORK
 	_latitude = latitude;
@@ -75,16 +86,14 @@ void City::update_coordinates(simtime_picosec time) {
     Eigen::AngleAxis<double> r_lat(lat_angle, Eigen::Vector3d(0.0, -1.0, 0.0));
     Eigen::AngleAxis<double> r_long(long_angle, Eigen::Vector3d(0.0, 0.0, -1.0));
     _coordinates = r_long*r_lat*v;
-    cout << timeAsSec(time) << " City coords(" << this << ") " << position() << endl;
+    STARLINK_DEBUG_LOG(cout << timeAsSec(time) << " City coords(" << this << ") " << position() << endl);
 #endif
 }
 
 void City::add_uplinks(Satellite* sats[], size_t num_sats,simtime_picosec time) {
-    double mindist = 200000;
     for (size_t i = 0; i < num_sats; i++) {
 	double dist = distance((Node&)(*sats[i]), time);
-	if (dist < mindist) mindist = dist;
-	cout << "DIST: " << dist << " MAXDIST: " << MAXDIST << endl;
+	STARLINK_DEBUG_LOG(cout << "DIST: " << dist << " MAXDIST: " << MAXDIST << endl);
 	//cout << "Sat " << i << " dist " << dist << " mindist " << mindist << endl;
 	if (dist < MAXDIST) {
 	    Link& uplink =
@@ -140,21 +149,24 @@ void City::update_uplinks(simtime_picosec time) {
 	std::sort(_inactive_sats.begin(), _inactive_sats.end(), inactive_sat_cmp);
 	_last_full_update = time;
     } else {
-	// only update the nearest satellites - the rest can't matter yet
+	// Only update the nearest inactive satellites.  The original code
+	// assumed a large constellation and asserted num_inactive > 11.
+	// Small benchmark constellations, including the 2-satellite sanity
+	// case, must also work, so clamp the update window to the available
+	// number of inactive satellites.
 	int num_inactive = _inactive_sats.size();
-	assert(num_inactive > 11);
-	for (int i = num_inactive - 11; i < num_inactive; i++) {
+	int ncheck = std::min(11, num_inactive);
+
+	for (int i = num_inactive - ncheck; i < num_inactive; i++) {
 	    Satellite& s = _inactive_sats[i]->_sat;
 	    double dist = distance((Node&)s, time);
 	    _inactive_sats[i]->_dist = dist;
 	}
-	// this is a single pass of a bubblesort, over the last 10
-	// items only!  it ensures the lowest is at the end.  Nothing
-	// else is guaranteed, but in practive we run this so often
-	// it's fine - the lowest will always end up at the end.
-	for (int i = num_inactive - 10; i < num_inactive; i++) {
+
+	// Single pass of a bubblesort over only the updated suffix.
+	// The inactive list is sorted so the shortest distance is at the end.
+	for (int i = std::max(1, num_inactive - ncheck + 1); i < num_inactive; i++) {
 	    if (_inactive_sats[i-1]->_dist < _inactive_sats[i]->_dist) {
-		// shuffle lower delay sats towards end
 		InactiveSat* ias = _inactive_sats[i-1];
 		_inactive_sats[i-1] = _inactive_sats[i];
 		_inactive_sats[i] = ias;
@@ -166,17 +178,16 @@ void City::update_uplinks(simtime_picosec time) {
     // OK, now the sat lists are (more or less) sorted.  Time to move things around.
     // At this point, the closest inactive sat is at the end, and the furthest active sat is at the end.
 
-    // Move any satellites that are now out of range from _active_uploinks to newly_inactive.
-    InactiveSat* newly_inactive[_active_uplinks.size()];
-    int newly_inactive_count = 0;
-    while(1) {
+    // Move any satellites that are now out of range from _active_uplinks
+    // to newly_inactive.  Guard .back() so tiny constellations cannot crash.
+    std::vector<InactiveSat*> newly_inactive;
+    while(!_active_uplinks.empty()) {
 	ActiveUplink* a = _active_uplinks.back();
 	double dist = a->_dist;
 	if (dist > MAXDIST) {
 	    _active_uplinks.pop_back();
 	    InactiveSat* ias = new InactiveSat(dist, a->_sat);
-	    newly_inactive[newly_inactive_count] = ias;
-	    newly_inactive_count++;
+	    newly_inactive.push_back(ias);
 	    _constellation.drop_link(a->_uplink);
 	    _constellation.drop_link(a->_downlink);
 	    Node::remove_link(a->_uplink);
@@ -196,7 +207,7 @@ void City::update_uplinks(simtime_picosec time) {
     // now we move any previously inactive satellites that have come
     // into range from _inactive_sats into _active_sats.
     int newly_active_count = 0;
-    while(1) {
+    while(!_inactive_sats.empty()) {
 	InactiveSat* s = _inactive_sats.back();
 	double dist = distance((Node&)(s->_sat), time);
 	if (dist < MAXDIST) {
@@ -214,23 +225,51 @@ void City::update_uplinks(simtime_picosec time) {
 	}
     }
 
-    // finally add the newly inactive sats to the main inactive list
-    for (int i = 0; i < newly_inactive_count; i++) {
+    // Finally add the newly inactive sats to the main inactive list.
+    for (size_t i = 0; i < newly_inactive.size(); i++) {
 	_inactive_sats.push_back(newly_inactive[i]);
+    }
+
+    if (newly_active_count > 0 || !newly_inactive.empty()) {
+	std::sort(_active_uplinks.begin(), _active_uplinks.end(), active_uplink_cmp);
+	std::sort(_inactive_sats.begin(), _inactive_sats.end(), inactive_sat_cmp);
     }
 #endif
 }
 
 Route* City::find_route(City& dst, simtime_picosec time) {
     Route* rt = NULL;
-	cout << "FIND ROUTE DIJKSTRA" << endl;
+    STARLINK_DEBUG_LOG(cout << "FIND ROUTE DIJKSTRA" << endl);
     _constellation.dijkstra(*this, dst, time);
-	cout << "FIND ROUTE FIND ROUTE" << endl;
+    STARLINK_DEBUG_LOG(cout << "FIND ROUTE FIND ROUTE" << endl);
     rt = _constellation.find_route(dst);
-	cout << "FIND ROUTE FINISH" << endl;
-	if (rt) {
+    STARLINK_DEBUG_LOG(cout << "FIND ROUTE FINISH" << endl);
+    if (rt) {
         rt->use_refcount();
-		rt->incr_refcount();
-	}
+	rt->incr_refcount();
+    }
     return rt;
+}
+
+int City::active_uplink_count() const {
+    return _active_uplinks.size();
+}
+
+int City::inactive_sat_count() const {
+    return _inactive_sats.size();
+}
+
+double City::nearest_sat_distance() const {
+    double best = std::numeric_limits<double>::infinity();
+    for (size_t i = 0; i < _active_uplinks.size(); i++) {
+	if (_active_uplinks[i]->_dist < best) {
+	    best = _active_uplinks[i]->_dist;
+	}
+    }
+    for (size_t i = 0; i < _inactive_sats.size(); i++) {
+	if (_inactive_sats[i]->_dist < best) {
+	    best = _inactive_sats[i]->_dist;
+	}
+    }
+    return best;
 }
