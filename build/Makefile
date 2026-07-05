@@ -12,7 +12,7 @@ STARLINK_DIR ?= $(SRC_ROOT)/starlink
 HTSIM_LIB ?= $(SRC_ROOT)/libhtsim.a
 PARSE_OUTPUT_BIN ?= $(SRC_ROOT)/parse_output
 
-CXXFLAGS ?= -I$(SRC_ROOT) -I$(STARLINK_DIR) -Wall -std=c++11 -g -O2
+CXXFLAGS += -I$(SRC_ROOT) -I$(STARLINK_DIR) -Wall -std=c++11 -g -O2
 
 # Important: do NOT add -DXCP_STATIC_NETWORK here. The dynamic constellation
 # constructor is required for variable satellite-count experiments.
