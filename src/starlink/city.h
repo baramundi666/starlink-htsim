@@ -23,7 +23,6 @@ class InactiveSat {
  public:
     InactiveSat(double dist, Satellite& sat)
 	: _dist(dist), _sat(sat) {
-	//assert(&_sat > (void*)0x0000700f6f27b20d);
     }
     friend bool inactive_sat_cmp(InactiveSat* s1, InactiveSat* s2);
     double _dist;
@@ -39,6 +38,9 @@ class City : public Node {
     void update_coordinates(simtime_picosec time);
     void update_uplinks(simtime_picosec time);
     Route *find_route(City& dst, simtime_picosec time);
+    int active_uplink_count() const;
+    int inactive_sat_count() const;
+    double nearest_sat_distance() const;
  private:
     double _latitude;
     double _longitude;

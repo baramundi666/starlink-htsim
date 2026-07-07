@@ -1,5 +1,10 @@
 *.o
 *.a
 **/.venv
+**/venv
 *.log
 *.txt
+**/.DS_Store
+**/.tool-versions
+*.binlog
+*.csv

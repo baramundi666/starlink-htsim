@@ -3,17 +3,41 @@
 #include "binary_heap.h"
 #include "constellation.h"
 
-// Must set Link::_logfile,
-// Link::_queue_logger_sampling_interval,
-// MultipathXcpSink::_logfile,
-// MultipathXcpSink::_eventlist,
-// MultipathXcpSrc::network_topology,
-// MultipathXcpSrc::_logfile before use
+#include <cstdlib>
+#include <iostream>
+#include <set>
+#include <sstream>
+
+#ifdef STARLINK_VERBOSE_DEBUG
+#define STARLINK_DEBUG_LOG(x) do { x; } while (0)
+#else
+#define STARLINK_DEBUG_LOG(x) do { } while (0)
+#endif
+
+using std::cerr;
+using std::cout;
+using std::endl;
+
 Constellation::Constellation(EventList& eventlist,
                   linkspeed_bps uplinkbitrate, mem_b uplinkqueuesize,
                   linkspeed_bps downlinkbitrate, mem_b downlinkqueuesize,
                   linkspeed_bps islbitrate, mem_b islqueuesize,
-                  int num_planes, int sats_per_plane) :
+                  int num_planes, int sats_per_plane)
+    : Constellation(eventlist,
+                    uplinkbitrate, uplinkqueuesize,
+                    downlinkbitrate, downlinkqueuesize,
+                    islbitrate, islqueuesize,
+                    num_planes, sats_per_plane,
+                    66, false, 0)
+{
+}
+
+Constellation::Constellation(EventList& eventlist,
+                  linkspeed_bps uplinkbitrate, mem_b uplinkqueuesize,
+                  linkspeed_bps downlinkbitrate, mem_b downlinkqueuesize,
+                  linkspeed_bps islbitrate, mem_b islqueuesize,
+                  int num_planes, int sats_per_plane,
+                  int orbital_slots, bool adjacent_sats, int sat_offset) :
     _link_factory(eventlist), heap(MAXNODES), _route_src(0)
 {
 #ifdef XCP_STATIC_NETWORK
@@ -60,23 +84,39 @@ Constellation::Constellation(EventList& eventlist,
     
     Node::link_factory = &_link_factory;
 
-    // real Starlink FCC-filing geometry is fixed at 24 planes; we
-    // "populate" only every (24/num_planes)-th plane so the ones we do
-    // use stay at their real, globally-uniform raan spacing (this is what
-    // the paper's Fig 2/3 partial-deployment scenarios do).
+    // Sanitize experiment parameters
     if (num_planes < 1) num_planes = 1;
     if (num_planes > 24) num_planes = 24;
-    int plane_step = 24 / num_planes;      // real orbital-plane index stride
+    if (sats_per_plane < 1) sats_per_plane = 1;
+    if (orbital_slots < sats_per_plane) orbital_slots = sats_per_plane;
+
+    _num_planes = num_planes;
+    _sats_per_plane = sats_per_plane;
+    _orbital_slots = orbital_slots;
+    _adjacent_sats = adjacent_sats;
+    _sat_offset = sat_offset;
+
+    if (_num_planes * _sats_per_plane > MAXNODES) {
+	cerr << "Requested topology has " << (_num_planes * _sats_per_plane)
+	     << " satellites, but MAXNODES is " << MAXNODES << endl;
+	abort();
+    }
+
+    // real Starlink FCC-filing geometry is fixed at 24 planes; we
+    // "populate" only every (24/num_planes)-th plane
+    int plane_step = 24 / _num_planes;      // real orbital-plane index stride
     if (plane_step < 1) plane_step = 1;
-    int sats_per_orbit = sats_per_plane > 0 ? sats_per_plane : 66;
+    int sats_per_orbit = _sats_per_plane;
 
     double raan = 0;
     int satnum = -1;
-    for (int slot = 0; slot < num_planes; slot++) {
+    for (int slot = 0; slot < _num_planes; slot++) {
 	int plane = slot * plane_step;     // real plane index, 0..23
 	double mean_anomaly = 0;
 	for (int sat = 0; sat < sats_per_orbit; sat++) {
-	    mean_anomaly = (plane * 13.0/24.0 + sat) * 360.0 / sats_per_orbit;
+	    int slot_id = _adjacent_sats ? (_sat_offset + sat) : sat;
+	    int anomaly_denominator = _adjacent_sats ? _orbital_slots : sats_per_orbit;
+	    mean_anomaly = (plane * 13.0/24.0 + slot_id) * 360.0 / anomaly_denominator;
 	    raan = plane * 360.0 / 24;
 	    satnum = sat + slot*sats_per_orbit;
 	    _sats[satnum] = new Satellite(plane, sat, satnum, 53.0, raan,
@@ -87,35 +127,27 @@ Constellation::Constellation(EventList& eventlist,
 
     int isl_plane_shift = -1;
     int isl_plane_step = 1;
-    for (int slot = 0; slot < num_planes; slot++) {
+    for (int slot = 0; slot < _num_planes; slot++) {
 	for (int sat = 0; sat < sats_per_orbit; sat++) {
 	    int satnum = sat + slot*sats_per_orbit;
 	    Satellite *s = _sats[satnum];
 
-	    Satellite *nextsat = _sats[satnum+1];
-	    if (sat == sats_per_orbit-1) {
-		// next sat is the first in the plane
-		nextsat = _sats[slot*sats_per_orbit];
+	    int nextidx = (sat + 1) % sats_per_orbit;
+	    int previdx = (sat - 1 + sats_per_orbit) % sats_per_orbit;
+	    Satellite *nextsat = _sats[slot*sats_per_orbit + nextidx];
+	    Satellite *prevsat = _sats[slot*sats_per_orbit + previdx];
+	    if (nextsat != s) {
+		s->add_link_to_dst(*nextsat, _linkbitrate[ISL], _linkqueuesize[ISL]);
 	    }
-	    s->add_link_to_dst(*nextsat, _linkbitrate[ISL], _linkqueuesize[ISL]);
-
-	    Satellite *prevsat = _sats[satnum-1];
-	    if (sat == 0) {
-		// prev sat is the last in the plane
-		prevsat = _sats[slot*sats_per_orbit + sats_per_orbit - 1];
-	    }
-	    s->add_link_to_dst(*prevsat, _linkbitrate[ISL], _linkqueuesize[ISL]);
-
-	    // Cross-plane (east/west) ISLs only make sense once we have more
-	    // than one populated plane. With exactly the original 24 planes
-	    // we keep the authors' exact tuned wraparound math; for any
-	    // other num_planes we use a simplified wrap around the populated
-	    // slots (approximate -- see header comment).
-	    if (num_planes == 1) {
-		continue; // single ring: no cross-plane ISLs at all
+	    if (prevsat != s && prevsat != nextsat) {
+		s->add_link_to_dst(*prevsat, _linkbitrate[ISL], _linkqueuesize[ISL]);
 	    }
 
-	    if (num_planes == 24) {
+	    if (_num_planes == 1) {
+		continue;
+	    }
+
+	    if (_num_planes == 24) {
 		int leftoffset = isl_plane_step*sats_per_orbit + isl_plane_shift;
 		while ((sat + leftoffset) / sats_per_orbit < isl_plane_step) {
 		    leftoffset += sats_per_orbit;
@@ -150,26 +182,19 @@ Constellation::Constellation(EventList& eventlist,
 		Satellite *rightsat = _sats[rightsatnum];
 		s->add_link_to_dst(*rightsat, _linkbitrate[ISL], _linkqueuesize[ISL]);
 	    } else {
-		// Simplified approximate wrap: connect same sat-in-plane
-		// index in the neighbouring populated slot, ring-wrapped.
-		int leftslot = (slot + 1) % num_planes;
-		int rightslot = (slot - 1 + num_planes) % num_planes;
+		int leftslot = (slot + 1) % _num_planes;
+		int rightslot = (slot - 1 + _num_planes) % _num_planes;
 		Satellite *leftsat = _sats[sat + leftslot*sats_per_orbit];
 		Satellite *rightsat = _sats[sat + rightslot*sats_per_orbit];
-		s->add_link_to_dst(*leftsat, _linkbitrate[ISL], _linkqueuesize[ISL]);
-		s->add_link_to_dst(*rightsat, _linkbitrate[ISL], _linkqueuesize[ISL]);
+		if (leftsat != s) {
+		    s->add_link_to_dst(*leftsat, _linkbitrate[ISL], _linkqueuesize[ISL]);
+		}
+		if (rightsat != s && rightsat != leftsat) {
+		    s->add_link_to_dst(*rightsat, _linkbitrate[ISL], _linkqueuesize[ISL]);
+		}
 	    }
 	}
     }
-    /*
-    for (int sat=0; sat < _num_sats; sat++) {
-	_sats[sat]->print_links();
-    }
-    
-    for (int sat=_num_sats-66; sat < _num_sats; sat++) {
-	_sats[sat]->print_links();
-    }
-    */
 #endif
 }
 
@@ -238,7 +263,6 @@ Constellation::find_route(City& dst) {
     //cout << "find_route" << endl;
     Route* route = new Route();
     Node* n = &dst;
-    int hop = 0;
     while (n && n != _route_src) {
 	Link* l = n->parentlink();
 	if (l) {
@@ -246,11 +270,10 @@ Constellation::find_route(City& dst) {
 	    route->push_front(static_cast<PacketSink*>(l));
 	    //cout << l->queue().nodename() << " " << this << endl;
 	    route->push_front(static_cast<PacketSink*>(l->queue()));
-	    hop++;
 	}
 	n = n->parent();
 	if (n == NULL) {
-	    cout << "no next hop" << endl;
+	    STARLINK_DEBUG_LOG(cout << "no next hop" << endl);
 	    break;
 	}
     }

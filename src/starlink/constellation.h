@@ -14,33 +14,20 @@ enum LinkType {UPLINK=0, DOWNLINK=1, ISL=2};
 
 class Constellation {
 public:
-    // num_planes: how many orbital planes to populate. Must divide 24
-    // evenly (1,2,3,4,6,8,12,24) so the populated planes stay uniformly
-    // spread around the globe at their real raan spacing, reproducing the
-    // paper's partial-deployment scenarios (Sec 2.1, Figs 2/3/6). Planes
-    // that aren't populated simply contain no satellites, so ISL
-    // connectivity across the gap is lost -- this codebase has no
-    // ground-relay chaining, so partial deployment here only tells you
-    // "does an ISL path exist at all", not ground-relay latency.
-    //
-    // sats_per_plane: satellites per populated plane (default 66, the
-    // real Starlink phase-1 value). Use a tiny value (e.g. 2) together
-    // with num_planes=1 to build a minimal sanity-test topology (see
-    // README scenario 0): a single ring of a handful of satellites with
-    // no cross-plane ISLs, real orbital mechanics still apply.
-    //
-    // NOTE on accuracy: the cross-plane (east/west) ISL wraparound offset
-    // math below was tuned by the original authors specifically for the
-    // 24-plane/66-satellite case. For num_planes>1 and !=24 we approximate
-    // it by treating the populated planes as a coarser ring of the same
-    // shape; this is good enough to explore connectivity/latency trends
-    // but is NOT a validated reproduction of the paper's partial-
-    // deployment numbers -- treat it as approximate.
     Constellation(EventList& eventlist,
 		  linkspeed_bps uplinkbitrate, mem_b uplinkqueuesize,
 		  linkspeed_bps dowlinkbitrate, mem_b downlinkqueuesize,
 		  linkspeed_bps islbitrate, mem_b islqueuesize,
 		  int num_planes = 24, int sats_per_plane = 66);
+
+    // Extended constructor used only by starlink_exp benchmark runs.
+    Constellation(EventList& eventlist,
+		  linkspeed_bps uplinkbitrate, mem_b uplinkqueuesize,
+		  linkspeed_bps dowlinkbitrate, mem_b downlinkqueuesize,
+		  linkspeed_bps islbitrate, mem_b islqueuesize,
+		  int num_planes, int sats_per_plane,
+		  int orbital_slots, bool adjacent_sats,
+		  int sat_offset);
     Satellite** sats() {return _sats;}
     int num_sats() const {return _num_sats;}
     inline Link& activate_link(Node& src, Node& dst, LinkType linktype) {
@@ -69,6 +56,11 @@ private:
     linkspeed_bps _linkbitrate[3];
     mem_b _linkqueuesize[3];
     int _num_sats;
+    int _num_planes;
+    int _sats_per_plane;
+    int _orbital_slots;
+    bool _adjacent_sats;
+    int _sat_offset;
     BinaryHeap heap;
     Node* _route_src;
 };

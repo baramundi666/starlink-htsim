@@ -1,0 +1,22 @@
+{
+  "num_planes": 1,
+  "sats_per_plane": 16,
+  "orbital_slots": 66,
+  "adjacent_sats": true,
+  "sat_offset": 0,
+  "num_sats_actual": 16,
+  "duration_s": 600,
+  "route_update_ms": 1000,
+  "queue_sample_ms": 10,
+  "ping_interval_ms": 1000,
+  "uplink_mbps": 10000,
+  "downlink_mbps": 10000,
+  "isl_mbps": 10000,
+  "queue_pkts": 20,
+  "packet_size_bytes": 1500,
+  "src_lat": 0,
+  "src_lon": 0,
+  "dst_lat": 0,
+  "dst_lon": 10,
+  "routing_only": true
+}
