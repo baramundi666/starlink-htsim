@@ -18,15 +18,6 @@ using std::cerr;
 using std::cout;
 using std::endl;
 
-// Must set Link::_logfile,
-// Link::_queue_logger_sampling_interval,
-// MultipathXcpSink::_logfile,
-// MultipathXcpSink::_eventlist,
-// MultipathXcpSrc::network_topology,
-// MultipathXcpSrc::_logfile before use
-// Original ABI-compatible constructor used by existing htsim components.
-// It delegates to the experiment constructor with the canonical 66 orbital
-// slots and spread satellite placement.
 Constellation::Constellation(EventList& eventlist,
                   linkspeed_bps uplinkbitrate, mem_b uplinkqueuesize,
                   linkspeed_bps downlinkbitrate, mem_b downlinkqueuesize,
@@ -93,8 +84,7 @@ Constellation::Constellation(EventList& eventlist,
     
     Node::link_factory = &_link_factory;
 
-    // Sanitize experiment parameters.  MAXNODES is fixed in the original
-    // code, so keep generated topologies inside that bound.
+    // Sanitize experiment parameters
     if (num_planes < 1) num_planes = 1;
     if (num_planes > 24) num_planes = 24;
     if (sats_per_plane < 1) sats_per_plane = 1;
@@ -113,9 +103,7 @@ Constellation::Constellation(EventList& eventlist,
     }
 
     // real Starlink FCC-filing geometry is fixed at 24 planes; we
-    // "populate" only every (24/num_planes)-th plane so the ones we do
-    // use stay at their real, globally-uniform raan spacing (this is what
-    // the paper's Fig 2/3 partial-deployment scenarios do).
+    // "populate" only every (24/num_planes)-th plane
     int plane_step = 24 / _num_planes;      // real orbital-plane index stride
     if (plane_step < 1) plane_step = 1;
     int sats_per_orbit = _sats_per_plane;
@@ -126,12 +114,6 @@ Constellation::Constellation(EventList& eventlist,
 	int plane = slot * plane_step;     // real plane index, 0..23
 	double mean_anomaly = 0;
 	for (int sat = 0; sat < sats_per_orbit; sat++) {
-	    // Two useful modes:
-	    //  - spread: populated satellites are evenly spread over the plane;
-	    //  - adjacent: populate consecutive FCC slots from a 66-slot plane.
-	    //    This is essential for the 2-satellite sanity benchmark, because
-	    //    "2 satellites in a plane" would otherwise place them opposite
-	    //    each other and make the test unrealistic.
 	    int slot_id = _adjacent_sats ? (_sat_offset + sat) : sat;
 	    int anomaly_denominator = _adjacent_sats ? _orbital_slots : sats_per_orbit;
 	    mean_anomaly = (plane * 13.0/24.0 + slot_id) * 360.0 / anomaly_denominator;
@@ -150,8 +132,6 @@ Constellation::Constellation(EventList& eventlist,
 	    int satnum = sat + slot*sats_per_orbit;
 	    Satellite *s = _sats[satnum];
 
-	    // In-plane ISLs.  With only two satellites, next and prev are the
-	    // same node; do not add the duplicate directed link twice.
 	    int nextidx = (sat + 1) % sats_per_orbit;
 	    int previdx = (sat - 1 + sats_per_orbit) % sats_per_orbit;
 	    Satellite *nextsat = _sats[slot*sats_per_orbit + nextidx];
@@ -163,13 +143,8 @@ Constellation::Constellation(EventList& eventlist,
 		s->add_link_to_dst(*prevsat, _linkbitrate[ISL], _linkqueuesize[ISL]);
 	    }
 
-	    // Cross-plane (east/west) ISLs only make sense once we have more
-	    // than one populated plane. With exactly the original 24 planes
-	    // we keep the authors' exact tuned wraparound math; for any
-	    // other num_planes we use a simplified wrap around the populated
-	    // slots (approximate -- see header comment).
 	    if (_num_planes == 1) {
-		continue; // single ring: no cross-plane ISLs at all
+		continue;
 	    }
 
 	    if (_num_planes == 24) {
@@ -207,8 +182,6 @@ Constellation::Constellation(EventList& eventlist,
 		Satellite *rightsat = _sats[rightsatnum];
 		s->add_link_to_dst(*rightsat, _linkbitrate[ISL], _linkqueuesize[ISL]);
 	    } else {
-		// Simplified approximate wrap: connect same sat-in-plane
-		// index in the neighbouring populated slot, ring-wrapped.
 		int leftslot = (slot + 1) % _num_planes;
 		int rightslot = (slot - 1 + _num_planes) % _num_planes;
 		Satellite *leftsat = _sats[sat + leftslot*sats_per_orbit];
@@ -222,15 +195,6 @@ Constellation::Constellation(EventList& eventlist,
 	    }
 	}
     }
-    /*
-    for (int sat=0; sat < _num_sats; sat++) {
-	_sats[sat]->print_links();
-    }
-    
-    for (int sat=_num_sats-66; sat < _num_sats; sat++) {
-	_sats[sat]->print_links();
-    }
-    */
 #endif
 }
 

@@ -1,18 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Benchmark runner for starlink-htsim/build.
-# It intentionally does NOT use -DXCP_STATIC_NETWORK.
-#
-# Usage from starlink-htsim/build:
-#   ./run_benchmarks.sh [results_dir]
-#
-# Optional env vars:
-#   BIN=/path/to/starlink_exp
-#   PARSE_OUTPUT=/path/to/parse_output
-#   SKIP_MAKE=1
-#   DEEP_CLEAN=1
-
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 BUILD_DIR="${PROJECT_ROOT}/build"
@@ -74,8 +62,7 @@ run_case "B_4planes_16sat" \
     --duration 600 --route-update-ms 1000 --ping-interval-ms 1000 \
     --routing-only
 
-# C. Article-like partial-deployment RTT benchmarks: New York -> Seattle.
-# Four hours are used for paper-style long-window plots; route update every 1s keeps runtime reasonable.
+# C. Partial-deployment RTT benchmarks: New York -> Seattle
 for planes in 6 12 24; do
     run_case "C_NY_Seattle_${planes}planes" \
         --planes "${planes}" --sats-per-plane 66 --orbital-slots 66 --sat-selection spread \
@@ -84,8 +71,7 @@ for planes in 6 12 24; do
         --routing-only
 done
 
-# D. London -> New York with packet traffic enabled, useful for queue/binlog parsing.
-# This version uses ISLs and no explicit ocean ground relays, because relay grids are not implemented yet.
+# D. London -> New York with packet traffic enabled
 for planes in 6 12 24; do
     run_case "D_London_NY_${planes}planes_ping" \
         --planes "${planes}" --sats-per-plane 66 --orbital-slots 66 --sat-selection spread \
@@ -94,7 +80,7 @@ for planes in 6 12 24; do
         --queue-sample-ms 10 --uplink-mbps 10000 --downlink-mbps 10000 --isl-mbps 10000
 done
 
-# E. Link-rate sensitivity. Keep topology fixed and vary ISL capacity.
+# E. Link-rate sensitivity
 for isl_mbps in 1000 5000 10000; do
     run_case "E_NY_Seattle_24planes_isl${isl_mbps}" \
         --planes 24 --sats-per-plane 66 --orbital-slots 66 --sat-selection spread \

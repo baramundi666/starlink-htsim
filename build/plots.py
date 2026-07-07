@@ -1,44 +1,16 @@
-#!/usr/bin/env python3
-"""
-Generate plots and raport.md for starlink-htsim benchmark results.
-
-Recommended usage from the repository build directory:
-
-    cd starlink-htsim/build
-    python3 analyze_starlink_results.py results --out report
-
-Expected input files per benchmark prefix:
-
-    <case>.config.json
-    <case>.routes.csv
-    <case>.visibility.csv
-    <case>.summary.csv
-    <case>.queue_ascii.txt       # optional, produced by getstat.sh for non-routing runs
-    <case>.queue.csv             # optional, produced by getstat.sh
-    <case>.stdout.txt/.stderr.txt
-
-Outputs:
-
-    <out>/raport.md
-    <out>/summary_metrics.csv
-    <out>/queue_metrics.csv
-    <out>/figures/*.png
-"""
-
 from __future__ import annotations
 
 import argparse
 import json
 import math
-import os
 import re
 import sys
 from dataclasses import dataclass
-from datetime import datetime
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
 
 import matplotlib.pyplot as plt
+from matplotlib.patches import Patch
 import pandas as pd
 
 
@@ -54,6 +26,16 @@ class CaseFiles:
     queue_csv: Optional[Path]
     stdout: Optional[Path]
     stderr: Optional[Path]
+
+
+GROUP_COLORS: Dict[str, str] = {
+    "A sanity": "#8c8c8c",
+    "B small scale": "#4C72B0",
+    "C NY-Seattle": "#55A868",
+    "D London-NY ping": "#C44E52",
+    "E ISL sensitivity": "#8172B2",
+    "Other": "#937860",
+}
 
 
 def parse_args() -> argparse.Namespace:
@@ -445,7 +427,23 @@ def sort_summary(df: pd.DataFrame) -> pd.DataFrame:
     return d.sort_values(["_group_order", "case"]).drop(columns=["_group_order"])
 
 
-def save_barh(df: pd.DataFrame, metric: str, title: str, xlabel: str, path: Path, *, dropna: bool = True) -> Optional[Path]:
+def add_group_legend(ax, groups_present: Iterable[str]) -> None:
+    handles = [Patch(color=GROUP_COLORS.get(g, "#4C72B0"), label=g) for g in dict.fromkeys(groups_present)]
+    if handles:
+        ax.legend(handles=handles, fontsize=8, loc="best")
+
+
+def save_barh(
+    df: pd.DataFrame,
+    metric: str,
+    title: str,
+    xlabel: str,
+    path: Path,
+    *,
+    dropna: bool = True,
+    annotate: bool = True,
+    color_by_group: bool = True,
+) -> Optional[Path]:
     if df.empty or metric not in df.columns:
         return None
     d = sort_summary(df)
@@ -459,13 +457,34 @@ def save_barh(df: pd.DataFrame, metric: str, title: str, xlabel: str, path: Path
     labels = [clean_label(x) for x in d["case"].tolist()]
     values = d[metric].astype(float).tolist()
     y_pos = range(len(labels))
-    ax.barh(list(y_pos), values)
+
+    colors = None
+    if color_by_group and "group" in d.columns:
+        colors = [GROUP_COLORS.get(g, "#4C72B0") for g in d["group"].tolist()]
+
+    bars = ax.barh(list(y_pos), values, color=colors)
     ax.set_yticks(list(y_pos))
     ax.set_yticklabels(labels)
     ax.invert_yaxis()
     ax.set_title(title)
     ax.set_xlabel(xlabel)
     ax.grid(True, axis="x", alpha=0.3)
+
+    if annotate and values:
+        span = max(values) - min(min(values), 0.0)
+        offset = span * 0.012 if span else 0.01
+        for rect, value in zip(bars, values):
+            ax.text(
+                rect.get_width() + offset,
+                rect.get_y() + rect.get_height() / 2,
+                f"{value:.2f}",
+                va="center",
+                fontsize=8,
+            )
+
+    if colors is not None:
+        add_group_legend(ax, d["group"].tolist())
+
     fig.tight_layout()
     fig.savefig(path, dpi=160)
     plt.close(fig)
@@ -535,12 +554,10 @@ def save_rtt_boxplot(cases: List[CaseFiles], matcher: re.Pattern, title: str, pa
         return None
 
     fig, ax = plt.subplots(figsize=(10, 5.5))
-    # Matplotlib 3.9+ renamed the argument from labels= to tick_labels=.
-    # Keep compatibility with both newer and older versions.
     try:
-        ax.boxplot(data, tick_labels=labels, showfliers=False)
+        ax.boxplot(data, tick_labels=labels, showfliers=False, showmeans=True, meanline=True)
     except TypeError:
-        ax.boxplot(data, labels=labels, showfliers=False)
+        ax.boxplot(data, labels=labels, showfliers=False, showmeans=True, meanline=True)
     ax.set_title(title)
     ax.set_ylabel("RTT [ms]")
     ax.grid(True, axis="y", alpha=0.3)
@@ -551,127 +568,7 @@ def save_rtt_boxplot(cases: List[CaseFiles], matcher: re.Pattern, title: str, pa
     return path
 
 
-def save_isl_sensitivity(summary: pd.DataFrame, path: Path) -> Optional[Path]:
-    if summary.empty:
-        return None
-    d = summary[summary["case"].str.startswith("E_")].copy()
-    if d.empty or "mean_rtt_ms" not in d.columns:
-        return None
-
-    def extract_isl(name: str) -> Optional[int]:
-        m = re.search(r"isl(\d+)", name)
-        return int(m.group(1)) if m else None
-
-    d["isl_mbps"] = d["case"].apply(extract_isl)
-    d = d.dropna(subset=["isl_mbps", "mean_rtt_ms"]).sort_values("isl_mbps")
-    if d.empty:
-        return None
-
-    fig, ax = plt.subplots(figsize=(8, 5))
-    ax.plot(d["isl_mbps"], d["mean_rtt_ms"], marker="o")
-    ax.set_title("Wpływ przepustowości ISL na średni RTT")
-    ax.set_xlabel("ISL [Mbps]")
-    ax.set_ylabel("Średni RTT [ms]")
-    ax.grid(True, alpha=0.3)
-    fig.tight_layout()
-    fig.savefig(path, dpi=160)
-    plt.close(fig)
-    return path
-
-
-def save_queue_timeseries(case: CaseFiles, path: Path) -> Optional[Path]:
-    df = parse_queue_ascii(case.queue_ascii)
-    if df.empty:
-        return None
-    d = df[df["event"] == "RANGE"].copy()
-    if d.empty or "time_s" not in d or "maxq" not in d:
-        return None
-    # Aggregate over all queue IDs at each sampling time.
-    series = d.groupby("time_s", as_index=False)["maxq"].max().sort_values("time_s")
-    if series.empty:
-        return None
-    fig, ax = plt.subplots(figsize=(10, 5))
-    ax.plot(series["time_s"], series["maxq"], linewidth=1.3)
-    ax.set_title(f"Maksymalne zajęcie kolejki w czasie: {clean_label(case.name)}")
-    ax.set_xlabel("Czas [s]")
-    ax.set_ylabel("Max queue [B]")
-    ax.grid(True, alpha=0.3)
-    fig.tight_layout()
-    fig.savefig(path, dpi=160)
-    plt.close(fig)
-    return path
-
-
-def save_visibility_plot(cases: List[CaseFiles], matcher: re.Pattern, path: Path) -> Optional[Path]:
-    selected = [c for c in cases if matcher.search(c.name)]
-    if not selected:
-        return None
-    case = selected[0]
-    if not case.visibility:
-        return None
-    df = safe_read_csv(case.visibility)
-    if df.empty:
-        return None
-    df = to_numeric(df, ["time_s", "active_uplinks", "nearest_sat_km"])
-    fig, ax = plt.subplots(figsize=(10, 5))
-    plotted = False
-    for endpoint, sub in df.groupby("endpoint"):
-        sub = sub.sort_values("time_s")
-        ax.plot(sub["time_s"], sub["nearest_sat_km"], label=str(endpoint), linewidth=1.3)
-        plotted = True
-    if not plotted:
-        plt.close(fig)
-        return None
-    ax.set_title(f"Najbliższy satelita dla endpointów: {clean_label(case.name)}")
-    ax.set_xlabel("Czas [s]")
-    ax.set_ylabel("Dystans do najbliższego satelity [km]")
-    ax.grid(True, alpha=0.3)
-    ax.legend()
-    fig.tight_layout()
-    fig.savefig(path, dpi=160)
-    plt.close(fig)
-    return path
-
-
-def markdown_table(df: pd.DataFrame, columns: List[str], max_rows: int = 80) -> str:
-    if df.empty:
-        return "Brak danych."
-    d = df.copy()
-    missing = [c for c in columns if c not in d.columns]
-    for col in missing:
-        d[col] = ""
-    d = d[columns].head(max_rows).copy()
-
-    for col in d.columns:
-        if pd.api.types.is_float_dtype(d[col]):
-            d[col] = d[col].map(lambda x: "" if pd.isna(x) else f"{x:.3f}")
-        else:
-            d[col] = d[col].map(lambda x: "" if pd.isna(x) else str(x))
-
-    headers = list(d.columns)
-    rows = d.values.tolist()
-    widths = [len(h) for h in headers]
-    for row in rows:
-        for i, value in enumerate(row):
-            widths[i] = max(widths[i], len(value))
-
-    def fmt_row(values: Iterable[str]) -> str:
-        return "| " + " | ".join(str(v).ljust(widths[i]) for i, v in enumerate(values)) + " |"
-
-    sep = "| " + " | ".join("-" * widths[i] for i in range(len(widths))) + " |"
-    lines = [fmt_row(headers), sep]
-    lines.extend(fmt_row(row) for row in rows)
-    return "\n".join(lines)
-
-
-def relative(path: Path, base: Path) -> str:
-    try:
-        return path.relative_to(base).as_posix()
-    except ValueError:
-        return path.as_posix()
-
-
-def make_figures(cases: List[CaseFiles], summary: pd.DataFrame, queue_summary: pd.DataFrame, out_dir: Path) -> List[Tuple[str, Path, str]]:
+def make_figures(cases: List[CaseFiles], summary: pd.DataFrame, out_dir: Path) -> List[Tuple[str, Path, str]]:
     figures_dir = ensure_dir(out_dir / "figures")
     figures: List[Tuple[str, Path, str]] = []
 
@@ -685,7 +582,7 @@ def make_figures(cases: List[CaseFiles], summary: pd.DataFrame, queue_summary: p
                 "Dostępność [% próbek z route_found=1]",
                 figures_dir / "01_availability_by_case.png",
             ),
-            "Odsetek próbek, w których Dijkstra znalazł trasę między endpointami.",
+            "Odsetek próbek, w których Dijkstra znalazł trasę między endpointami. Kolor słupka koduje grupę scenariusza (A-E).",
         ),
         (
             "Średni RTT we wszystkich benchmarkach",
@@ -696,7 +593,7 @@ def make_figures(cases: List[CaseFiles], summary: pd.DataFrame, queue_summary: p
                 "RTT [ms]",
                 figures_dir / "02_mean_rtt_by_case.png",
             ),
-            "Średni RTT liczony tylko dla próbek, w których trasa istniała.",
+            "Średni RTT liczony tylko dla próbek, w których trasa istniała. Wartości liczbowe podpisane bezpośrednio na słupkach.",
         ),
         (
             "Częstotliwość zmian tras",
@@ -753,7 +650,7 @@ def make_figures(cases: List[CaseFiles], summary: pd.DataFrame, queue_summary: p
         figures_dir / "07_C_NY_Seattle_rtt_boxplot.png",
     )
     if path:
-        figures.append(("Rozkład RTT: NY-Seattle", path, "Boxplot bez outlierów, liczony dla próbek z istniejącą trasą."))
+        figures.append(("Rozkład RTT: NY-Seattle", path, "Boxplot bez outlierów (z zaznaczoną średnią), liczony dla próbek z istniejącą trasą."))
 
     path = save_line_for_cases(
         cases,
@@ -767,336 +664,13 @@ def make_figures(cases: List[CaseFiles], summary: pd.DataFrame, queue_summary: p
     if path:
         figures.append(("RTT w czasie: London-New York", path, "Benchmark z włączonym ruchem pakietowym i binlogiem kolejek."))
 
-    path = save_isl_sensitivity(summary, figures_dir / "09_E_isl_sensitivity.png")
-    if path:
-        figures.append(("Wrażliwość na przepustowość ISL", path, "Porównanie średniego RTT dla różnych wartości --isl-mbps."))
-
-    if not queue_summary.empty and "max_queue_bytes" in queue_summary.columns:
-        path = save_barh(
-            queue_summary,
-            "max_queue_bytes",
-            "Maksymalne zajęcie kolejki według benchmarku",
-            "Max queue [B]",
-            figures_dir / "10_max_queue_by_case.png",
-        )
-        if path:
-            figures.append(("Maksymalne zajęcie kolejek", path, "Metryka wyciągnięta z plików queue_ascii.txt produkowanych przez getstat.sh."))
-
-    # One queue timeseries for the first non-empty queue case.
-    for case in cases:
-        if not case.queue_ascii:
-            continue
-        path = save_queue_timeseries(case, figures_dir / f"11_queue_timeseries_{case.name}.png")
-        if path:
-            figures.append(("Zajęcie kolejki w czasie", path, f"Pierwszy dostępny benchmark z kolejkami: {case.name}."))
-            break
-
-    path = save_visibility_plot(cases, re.compile(r"^A_sanity_2sat_adjacent"), figures_dir / "12_visibility_sanity_2sat.png")
-    if path:
-        figures.append(("Widoczność satelitów w sanity teście", path, "Dystans endpointów do najbliższego satelity w konfiguracji 2-satelitarnej."))
-
     return figures
-
-
-def repo_structure_text(repo_root: Optional[Path]) -> str:
-    if repo_root and repo_root.exists():
-        return f"""```text
-{repo_root.name}/
-  README.md
-  build/
-    Makefile
-    build.sh
-    run_benchmarks.sh
-    getstat.sh
-    starlink_exp
-    results/
-  src/
-    Makefile
-    libhtsim.a
-    parse_output.cpp
-    parse_output
-    eventlist.cpp/.h
-    logfile.cpp/.h
-    loggers.cpp/.h
-    route.cpp/.h
-    ping.cpp/.h
-    xcp*.cpp/.h
-    starlink/
-      main.cpp
-      constellation.cpp/.h
-      city.cpp/.h
-      satellite.cpp/.h
-      node.cpp/.h
-      isl.cpp/.h
-      binary_heap.cpp/.h
-      experiment_logger.cpp/.h
-```
-"""
-    return """```text
-starlink-htsim/
-  README.md
-  build/                  # katalog roboczy: kompilacja starlink_exp, skrypty, wyniki
-    Makefile
-    build.sh
-    run_benchmarks.sh
-    getstat.sh
-    results/
-  src/                    # rdzeń htsim i parser logów
-    Makefile
-    libhtsim.a
-    parse_output.cpp
-    parse_output
-    eventlist.cpp/.h
-    logfile.cpp/.h
-    loggers.cpp/.h
-    route.cpp/.h
-    ping.cpp/.h
-    xcp*.cpp/.h
-    starlink/              # kod eksperymentu Starlink
-      main.cpp
-      constellation.cpp/.h
-      city.cpp/.h
-      satellite.cpp/.h
-      node.cpp/.h
-      isl.cpp/.h
-      binary_heap.cpp/.h
-      experiment_logger.cpp/.h
-```
-"""
-
-
-def generate_report(
-    cases: List[CaseFiles],
-    summary: pd.DataFrame,
-    queue_summary: pd.DataFrame,
-    figures: List[Tuple[str, Path, str]],
-    results_dir: Path,
-    out_dir: Path,
-    repo_root: Optional[Path],
-    max_table_rows: int,
-) -> Path:
-    report_path = out_dir / "raport.md"
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-    summary_cols = [
-        "case",
-        "group",
-        "num_planes",
-        "sats_per_plane",
-        "num_sats",
-        "routing_only",
-        "availability_pct",
-        "mean_rtt_ms",
-        "p95_rtt_ms",
-        "route_changes_per_min",
-        "mean_route_segment_duration_s",
-        "mean_isl_hops",
-        "mean_dijkstra_cpu_ms",
-    ]
-    queue_cols = [
-        "case",
-        "queue_samples",
-        "max_queue_bytes",
-        "mean_lastq_bytes",
-        "max_lastq_bytes",
-        "max_queue_buffer_bytes",
-        "max_last_dropped",
-        "max_cumulative_drop",
-        "max_cumulative_arrivals",
-    ]
-
-    observations = make_observations(summary, queue_summary)
-
-    lines: List[str] = []
-    lines.append("# Raport z eksperymentów Starlink HTSim")
-    lines.append("")
-    lines.append(f"Wygenerowano: `{now}`")
-    lines.append("")
-    lines.append(f"Katalog z wynikami: `{results_dir}`")
-    lines.append("")
-    lines.append("## 1. Co analizuje ten raport")
-    lines.append("")
-    lines.append(
-        "Raport zbiera wyniki benchmarków uruchamianych przez `build/run_benchmarks.sh`. "
-        "Każdy benchmark zapisuje konfigurację eksperymentu, próbki tras, widoczność satelitów oraz — dla uruchomień bez `--routing-only` — binarne logi htsim parsowane później przez `getstat.sh`."
-    )
-    lines.append("")
-    lines.append("Analizowane pliki na pojedynczy benchmark:")
-    lines.append("")
-    lines.append("```text")
-    lines.append("<case>.config.json        # parametry symulacji")
-    lines.append("<case>.routes.csv         # RTT, route_found, hash trasy, hop count, Dijkstra CPU")
-    lines.append("<case>.visibility.csv     # liczba aktywnych uplinków i dystans do najbliższego satelity")
-    lines.append("<case>.summary.csv        # proste wpisy key,value z programu")
-    lines.append("<case>.binlog             # binarny log htsim, jeśli symulacja nie była routing-only")
-    lines.append("<case>.queue_ascii.txt    # log kolejek po parsowaniu przez getstat.sh")
-    lines.append("<case>.queue.csv          # surowe zdarzenia kolejek w CSV")
-    lines.append("```")
-    lines.append("")
-    lines.append("## 2. Struktura repozytorium")
-    lines.append("")
-    lines.append(repo_structure_text(repo_root))
-    lines.append("")
-    lines.append("Najważniejsze miejsca:")
-    lines.append("")
-    lines.append("- `build/` — katalog, z którego uruchamiasz kompilację i benchmarki; tutaj powstaje binarka `starlink_exp` oraz katalog `results/`.")
-    lines.append("- `src/` — rdzeń symulatora htsim, implementacja event loopa, logowania, kolejek, protokołów i parsera `parse_output`.")
-    lines.append("- `src/starlink/` — kod eksperymentu satelitarnego: generowanie konstelacji, miasta, uplinki, ISL-e, routing i logger eksperymentalny.")
-    lines.append("")
-    lines.append("## 3. Jak działa symulacja")
-    lines.append("")
-    lines.append(
-        "Symulacja jest dyskretno-zdarzeniowa. `EventList` przechowuje zdarzenia w czasie symulowanym, a `starlink_exp` okresowo aktualizuje pozycje endpointów i satelitów, aktywne uplinki oraz trasę między źródłem i celem."
-    )
-    lines.append("")
-    lines.append(
-        "`Constellation` tworzy satelity na podstawie liczby płaszczyzn orbitalnych i liczby satelitów w płaszczyźnie. W trybie `--sat-selection adjacent` można uruchomić małą liczbę sąsiednich satelitów z pełnej orbity 66-slotowej, co jest przydatne do sanity testów, np. konfiguracji z dwoma satelitami. W trybie `spread` satelity są rozłożone regularnie po dostępnych slotach."
-    )
-    lines.append("")
-    lines.append(
-        "`City` reprezentuje naziemny endpoint. Dla danego czasu oblicza współrzędne punktu na obracającej się Ziemi, sprawdza dystans do satelitów i aktywuje uplinki tylko do satelitów w zasięgu. Zasięg wynika z geometrii LEO i limitu dystansu używanego w kodzie."
-    )
-    lines.append("")
-    lines.append(
-        "Routing działa przez Dijkstrę po grafie złożonym z endpointów, aktywnych uplinków/downlinków oraz ISL-i. W `--routing-only` program tylko przelicza trasy i loguje metryki routingu. Bez `--routing-only` uruchamiany jest ruch pingowy, a standardowe loggery htsim zapisują też zdarzenia kolejek do binloga."
-    )
-    lines.append("")
-    lines.append("## 4. Benchmarki")
-    lines.append("")
-    lines.append("Benchmarki są pogrupowane według prefiksu nazwy:")
-    lines.append("")
-    lines.append("- `A_*` — minimalny sanity test, w tym konfiguracja `1 plane × 2 adjacent satellites`.")
-    lines.append("- `B_*` — mała skala, wzrost liczby satelitów i płaszczyzn.")
-    lines.append("- `C_*` — benchmark podobny do artykułu: New York → Seattle dla 6/12/24 płaszczyzn.")
-    lines.append("- `D_*` — London → New York z ruchem ping i logami kolejek.")
-    lines.append("- `E_*` — wrażliwość na przepustowość ISL przy stałej topologii.")
-    lines.append("")
-    lines.append("## 5. Definicje metryk")
-    lines.append("")
-    lines.append("- `availability_pct` — procent próbek, w których `route_found == 1` dla kierunku `out`.")
-    lines.append("- `mean_rtt_ms`, `p95_rtt_ms` — RTT liczone tylko dla próbek, w których trasa istnieje.")
-    lines.append("- `route_changes_per_min` — liczba zmian trasy na minutę; obejmuje także przejścia do `NO_ROUTE`.")
-    lines.append("- `mean_route_segment_duration_s` — średni czas trwania spójnego segmentu tej samej znalezionej trasy.")
-    lines.append("- `mean_isl_hops` — średnia liczba hopów przez inter-satellite links.")
-    lines.append("- `mean_dijkstra_cpu_ms` — średni koszt CPU pojedynczego wyszukiwania trasy.")
-    lines.append("- `max_queue_bytes` — największe zajęcie kolejki zaobserwowane w `queue_ascii.txt`; dostępne tylko dla benchmarków z ruchem pakietowym.")
-    lines.append("")
-    lines.append("## 6. Podsumowanie wyników")
-    lines.append("")
-    lines.append(markdown_table(sort_summary(summary), summary_cols, max_rows=max_table_rows))
-    lines.append("")
-    lines.append("Pełna tabela została zapisana do `summary_metrics.csv`.")
-    lines.append("")
-    if not queue_summary.empty and queue_summary["queue_samples"].fillna(0).sum() > 0:
-        lines.append("### Metryki kolejek")
-        lines.append("")
-        lines.append(markdown_table(sort_summary(queue_summary), queue_cols, max_rows=max_table_rows))
-        lines.append("")
-        lines.append("Pełna tabela została zapisana do `queue_metrics.csv`.")
-        lines.append("")
-    else:
-        lines.append("### Metryki kolejek")
-        lines.append("")
-        lines.append("Nie znaleziono niepustych plików `*.queue_ascii.txt`. Dla benchmarków `--routing-only` jest to oczekiwane, bo nie generują ruchu pakietowego ani logów kolejek.")
-        lines.append("")
-    lines.append("## 7. Najważniejsze obserwacje automatyczne")
-    lines.append("")
-    for obs in observations:
-        lines.append(f"- {obs}")
-    lines.append("")
-    lines.append("## 8. Wykresy")
-    lines.append("")
-    if figures:
-        for title, path, desc in figures:
-            rel = relative(path, out_dir)
-            lines.append(f"### {title}")
-            lines.append("")
-            lines.append(f"![{title}]({rel})")
-            lines.append("")
-            lines.append(desc)
-            lines.append("")
-    else:
-        lines.append("Nie udało się wygenerować wykresów, bo nie znaleziono danych wejściowych.")
-        lines.append("")
-    lines.append("## 9. Ograniczenia interpretacji")
-    lines.append("")
-    lines.append("- Benchmark z dwoma satelitami jest sanity testem kodu, a nie realistycznym modelem pokrycia Starlink.")
-    lines.append("- W obecnej wersji benchmarki C/D/E używają ISL-i, ale nie implementują jeszcze gęstej siatki naziemnych relayów z artykułu.")
-    lines.append("- Dla `routing-only` nie ma throughputu, strat ani kolejek, bo nie jest generowany ruch pakietowy.")
-    lines.append("- RTT w tabelach jest liczone tylko dla momentów, w których istnieje trasa; dostępność należy interpretować razem z RTT.")
-    lines.append("- Częste zmiany tras oznaczają, że trasa o niskiej latencji może być mniej stabilna operacyjnie.")
-    lines.append("")
-    lines.append("## 10. Jak odtworzyć analizę")
-    lines.append("")
-    lines.append("```bash")
-    lines.append("cd starlink-htsim/build")
-    lines.append("./run_benchmarks.sh results")
-    lines.append("python3 analyze_starlink_results.py results --out report")
-    lines.append("open report/raport.md")
-    lines.append("```")
-    lines.append("")
-
-    report_path.write_text("\n".join(lines), encoding="utf-8")
-    return report_path
-
-
-def make_observations(summary: pd.DataFrame, queue_summary: pd.DataFrame) -> List[str]:
-    observations: List[str] = []
-    if summary.empty:
-        return ["Brak danych `*.routes.csv`, więc nie można wyciągnąć obserwacji."]
-
-    with_av = summary.dropna(subset=["availability_pct"])
-    if not with_av.empty:
-        best = with_av.sort_values("availability_pct", ascending=False).iloc[0]
-        worst = with_av.sort_values("availability_pct", ascending=True).iloc[0]
-        observations.append(
-            f"Najwyższą dostępność trasy ma `{best['case']}`: {best['availability_pct']:.2f}%. "
-            f"Najniższą dostępność ma `{worst['case']}`: {worst['availability_pct']:.2f}%."
-        )
-
-    with_rtt = summary.dropna(subset=["mean_rtt_ms"])
-    if not with_rtt.empty:
-        best_rtt = with_rtt.sort_values("mean_rtt_ms", ascending=True).iloc[0]
-        observations.append(
-            f"Najniższy średni RTT wśród próbek z istniejącą trasą ma `{best_rtt['case']}`: {best_rtt['mean_rtt_ms']:.3f} ms."
-        )
-
-    c_cases = summary[summary["case"].str.startswith("C_")].dropna(subset=["mean_rtt_ms"])
-    if len(c_cases) >= 2:
-        ordered = c_cases.sort_values("num_planes") if "num_planes" in c_cases.columns else c_cases.sort_values("case")
-        values = ", ".join(f"{row['case']}={row['mean_rtt_ms']:.2f} ms" for _, row in ordered.iterrows())
-        observations.append(f"Dla benchmarków NY-Seattle średnie RTT wynosi: {values}.")
-
-    with_changes = summary.dropna(subset=["route_changes_per_min"])
-    if not with_changes.empty:
-        most_changes = with_changes.sort_values("route_changes_per_min", ascending=False).iloc[0]
-        observations.append(
-            f"Najczęstsze zmiany tras występują w `{most_changes['case']}`: {most_changes['route_changes_per_min']:.3f} zmian/min."
-        )
-
-    with_dijkstra = summary.dropna(subset=["mean_dijkstra_cpu_ms"])
-    if not with_dijkstra.empty:
-        max_dijkstra = with_dijkstra.sort_values("mean_dijkstra_cpu_ms", ascending=False).iloc[0]
-        observations.append(
-            f"Najwyższy średni koszt Dijkstry zanotowano w `{max_dijkstra['case']}`: {max_dijkstra['mean_dijkstra_cpu_ms']:.4f} ms."
-        )
-
-    if not queue_summary.empty and queue_summary["queue_samples"].fillna(0).sum() > 0:
-        q = queue_summary.dropna(subset=["max_queue_bytes"])
-        if not q.empty:
-            maxq = q.sort_values("max_queue_bytes", ascending=False).iloc[0]
-            observations.append(f"Największe zaobserwowane zajęcie kolejki ma `{maxq['case']}`: {maxq['max_queue_bytes']:.0f} B.")
-    else:
-        observations.append("Brak metryk kolejek dla części lub całości wyników oznacza, że benchmarki były routing-only albo nie uruchomiono `getstat.sh` na binlogach.")
-
-    return observations
 
 
 def main() -> int:
     args = parse_args()
     results_dir = Path(args.results_dir).resolve()
     out_dir = Path(args.out).resolve() if args.out else (results_dir / "report").resolve()
-    repo_root = Path(args.repo_root).resolve() if args.repo_root else None
 
     if not results_dir.exists():
         print(f"Results directory does not exist: {results_dir}", file=sys.stderr)
@@ -1120,23 +694,12 @@ def main() -> int:
     queue_path = out_dir / "queue_metrics.csv"
     queue_summary.to_csv(queue_path, index=False)
 
-    figures = make_figures(cases, summary, queue_summary, out_dir)
-    report_path = generate_report(
-        cases=cases,
-        summary=summary,
-        queue_summary=queue_summary,
-        figures=figures,
-        results_dir=results_dir,
-        out_dir=out_dir,
-        repo_root=repo_root,
-        max_table_rows=args.max_table_rows,
-    )
+    figures = make_figures(cases, summary, out_dir)
 
     print(f"Found cases: {len(cases)}")
     print(f"Summary: {summary_path}")
     print(f"Queue metrics: {queue_path}")
     print(f"Figures: {out_dir / 'figures'}")
-    print(f"Report: {report_path}")
     return 0
 
 

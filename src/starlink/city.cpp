@@ -137,7 +137,6 @@ void City::update_uplinks(simtime_picosec time) {
     // At this point, the ActiveUplink with the largest distance is at the end of _active_uplinks
     
     if (time - _last_full_update > timeFromSec(10)) {
-	// it's long enough since the last full sort - we'll sort now.
 
 	// update distances
 	for (int i = 0; i < _inactive_sats.size(); i++) {
@@ -149,11 +148,7 @@ void City::update_uplinks(simtime_picosec time) {
 	std::sort(_inactive_sats.begin(), _inactive_sats.end(), inactive_sat_cmp);
 	_last_full_update = time;
     } else {
-	// Only update the nearest inactive satellites.  The original code
-	// assumed a large constellation and asserted num_inactive > 11.
-	// Small benchmark constellations, including the 2-satellite sanity
-	// case, must also work, so clamp the update window to the available
-	// number of inactive satellites.
+	// Only update the nearest inactive satellites.
 	int num_inactive = _inactive_sats.size();
 	int ncheck = std::min(11, num_inactive);
 
@@ -174,12 +169,8 @@ void City::update_uplinks(simtime_picosec time) {
 	}
     }
 
-
-    // OK, now the sat lists are (more or less) sorted.  Time to move things around.
-    // At this point, the closest inactive sat is at the end, and the furthest active sat is at the end.
-
     // Move any satellites that are now out of range from _active_uplinks
-    // to newly_inactive.  Guard .back() so tiny constellations cannot crash.
+    // to newly_inactive.
     std::vector<InactiveSat*> newly_inactive;
     while(!_active_uplinks.empty()) {
 	ActiveUplink* a = _active_uplinks.back();

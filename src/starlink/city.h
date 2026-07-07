@@ -23,7 +23,6 @@ class InactiveSat {
  public:
     InactiveSat(double dist, Satellite& sat)
 	: _dist(dist), _sat(sat) {
-	//assert(&_sat > (void*)0x0000700f6f27b20d);
     }
     friend bool inactive_sat_cmp(InactiveSat* s1, InactiveSat* s2);
     double _dist;

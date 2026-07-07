@@ -189,7 +189,7 @@ static RouteMetrics analyze_route(Route* route,
         m.rtt_ms = timeAsMs(rtt);
         m.one_way_latency_ms = m.rtt_ms / 2.0;
 
-        unsigned long long h = 1469598103934665603ULL; // FNV-ish seed
+        unsigned long long h = 1469598103934665603ULL;
         for (auto it = route->begin(); it != route->end(); ++it) {
             Link* link = dynamic_cast<Link*>(*it);
             if (link != NULL) {
@@ -382,8 +382,6 @@ int main(int argc, char** argv) {
                 rt_out = new_rt_out;
                 rt_back = new_rt_back;
             } else {
-                // Keep the last working route alive for the packet generator,
-                // but record the missing route in routes.csv.
                 if (new_rt_out) new_rt_out->decr_refcount();
                 if (new_rt_back) new_rt_back->decr_refcount();
             }

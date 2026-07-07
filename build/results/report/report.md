@@ -1,170 +1,147 @@
-# Raport z eksperymentów Starlink HTSim
+# Raport z analizy wydajności i protokołów routingu w konstelacjach satelitarnych (starlink-htsim)
+### Autorzy
+- Iga Antonik
+- Mateusz Król
+- Łukasz Wilański
 
-## 1. Co analizuje ten raport
-
-Raport zbiera wyniki benchmarków uruchamianych przez `build/run_benchmarks.sh`. Każdy benchmark zapisuje konfigurację eksperymentu, próbki tras, widoczność satelitów oraz — dla uruchomień bez `--routing-only` — binarne logi htsim parsowane później przez `getstat.sh`.
-
-Analizowane pliki na pojedynczy benchmark:
-
-```text
-<case>.config.json        # parametry symulacji
-<case>.routes.csv         # RTT, route_found, hash trasy, hop count, Dijkstra CPU
-<case>.visibility.csv     # liczba aktywnych uplinków i dystans do najbliższego satelity
-<case>.summary.csv        # proste wpisy key,value z programu
-<case>.binlog             # binarny log htsim, jeśli symulacja nie była routing-only
-<case>.queue_ascii.txt    # log kolejek po parsowaniu przez getstat.sh
-<case>.queue.csv          # surowe zdarzenia kolejek w CSV
-```
-
-## 2. Struktura repozytorium
-
-```text
-starlink-htsim/
-  README.md
-  build/
-    Makefile
-    build.sh
-    run_benchmarks.sh
-    getstat.sh
-    starlink_exp
-    results/
-  src/
-    Makefile
-    libhtsim.a
-    parse_output.cpp
-    parse_output
-    eventlist.cpp/.h
-    logfile.cpp/.h
-    loggers.cpp/.h
-    route.cpp/.h
-    ping.cpp/.h
-    xcp*.cpp/.h
-    starlink/
-      main.cpp
-      constellation.cpp/.h
-      city.cpp/.h
-      satellite.cpp/.h
-      node.cpp/.h
-      isl.cpp/.h
-      binary_heap.cpp/.h
-      experiment_logger.cpp/.h
-```
+Niniejszy dokument przedstawia wyniki badań nad wydajnością symulowanych sieci satelitarnych na niskiej orbicie okołoziemskiej, inspirowanych architekturą konstelacji Starlink. Wykorzystując środowisko symulacyjne oparte na zmodyfikowanym rdzeniu `htsim`, przeprowadziliśmy serię benchmarków. Badania miały na celu ewaluację dostępności tras, opóźnień (RTT).
 
 
-Najważniejsze miejsca:
+## 1. Środowisko Symulacyjne i Architektura
 
-- `build/` — katalog, z którego uruchamiasz kompilację i benchmarki; tutaj powstaje binarka `starlink_exp` oraz katalog `results/`.
-- `src/` — rdzeń symulatora htsim, implementacja event loopa, logowania, kolejek, protokołów i parsera `parse_output`.
-- `src/starlink/` — kod eksperymentu satelitarnego: generowanie konstelacji, miasta, uplinki, ISL-e, routing i logger eksperymentalny.
+Projekt opiera się na dyskretno-zdarzeniowym symulatorze sieciowym, rozbudowanym o moduł fizyki orbitalnej i geometrii sferycznej.
 
-## 3. Jak działa symulacja
+Symulator działa w oparciu o następujące komponenty główne:
 
-Symulacja jest dyskretno-zdarzeniowa. `EventList` przechowuje zdarzenia w czasie symulowanym, a `starlink_exp` okresowo aktualizuje pozycje endpointów i satelitów, aktywne uplinki oraz trasę między źródłem i celem.
+* **Constellation:** Moduł odpowiedzialny za generowanie układu satelitów na podstawie zadanej liczby płaszczyzn orbitalnych oraz zagęszczenia węzłów w poszczególnych płaszczyznach. Obsługuje zarówno tryb `spread` (równomierne rozmieszczenie), jak i `adjacent` (symulacja sąsiadujących węzłów do celów testowych).
+* **City:** Węzeł naziemny (endpoint) przeliczający swoje współrzędne w funkcji czasu na obracającej się Ziemi. Odpowiada za aktywację łączności bezprzewodowej (Uplink/Downlink) wyłącznie do satelitów znajdujących się w zasięgu geometrycznym.
+* **Algorytm Dijkstry:** Moduł dynamicznego wyznaczania najkrótszych ścieżek grafowych przez łącza międzysatelitarne (ISL), aktualizujący trasy w zdefiniowanych interwałach (np. co 1000 ms).
 
-`Constellation` tworzy satelity na podstawie liczby płaszczyzn orbitalnych i liczby satelitów w płaszczyźnie. W trybie `--sat-selection adjacent` można uruchomić małą liczbę sąsiednich satelitów z pełnej orbity 66-slotowej, co jest przydatne do sanity testów, np. konfiguracji z dwoma satelitami. W trybie `spread` satelity są rozłożone regularnie po dostępnych slotach.
+Proces badawczy został zautomatyzowany poprzez skrypt (`run_benchmarks.sh`), który po zakończeniu symulacji wykorzystuje parser `parse_output.cpp` do ekstrakcji i agregacji danych z binarnych logów zdarzeniowych do ustrukturyzowanych plików CSV.
 
-`City` reprezentuje naziemny endpoint. Dla danego czasu oblicza współrzędne punktu na obracającej się Ziemi, sprawdza dystans do satelitów i aktywuje uplinki tylko do satelitów w zasięgu. Zasięg wynika z geometrii LEO i limitu dystansu używanego w kodzie.
 
-Routing działa przez Dijkstrę po grafie złożonym z endpointów, aktywnych uplinków/downlinków oraz ISL-i. W `--routing-only` program tylko przelicza trasy i loguje metryki routingu. Bez `--routing-only` uruchamiany jest ruch pingowy, a standardowe loggery htsim zapisują też zdarzenia kolejek do binloga.
+## 2. Metodologia i Scenariusze Badawcze (Benchmarks)
 
-## 4. Benchmarki
+W celu zbadania zachowania sieci, wzięliśmy pod uwagę 5 scenariuszy:
 
-Benchmarki są pogrupowane według prefiksu nazwy:
+* **A (`sanity`)**: Test minimalnej konfiguracji (1 płaszczyzna, 2 satelity w trybie `adjacent`), służący do walidacji podstawowej fizyki modelu.
 
-- `A_*` — minimalny sanity test, w tym konfiguracja `1 plane × 2 adjacent satellites`.
-- `B_*` — mała skala, wzrost liczby satelitów i płaszczyzn.
-- `C_*` — benchmark podobny do artykułu: New York → Seattle dla 6/12/24 płaszczyzn.
-- `D_*` — London → New York z ruchem ping i logami kolejek.
-- `E_*` — wrażliwość na przepustowość ISL przy stałej topologii.
 
-## 5. Definicje metryk
+* **B (`small scale`)**: Scenariusze testowe z rosnącą liczbą satelitów i płaszczyzn.
 
-- `availability_pct` — procent próbek, w których `route_found == 1` dla kierunku `out`.
+
+* **C (`partial deployment`)**: Symulacja połączenia Nowy Jork $\rightarrow$ Seattle dla konstelacji częściowych (6, 12, 24 płaszczyzn orbitalnych), badająca wpływ gęstości pokrycia na połączenie.
+
+
+* **D (`ping & queue`)**: Połączenie Londyn $\rightarrow$ Nowy Jork z aktywnym ruchem sieciowym.
+
+
+* **E (`ISL sensitivity`)**: Analiza wrażliwości opóźnień na zmiany bazowej przepustowości łączy międzysatelitarnych (ISL).
+
+
+
+Poddano analizie szereg metryk, w tym: 
+- `availability_pct` — procentowy wskaźnik poprawnie odnalezionych tras (procent próbek, w których `route_found == 1` dla kierunku `out`).
 - `mean_rtt_ms`, `p95_rtt_ms` — RTT liczone tylko dla próbek, w których trasa istnieje.
 - `route_changes_per_min` — liczba zmian trasy na minutę; obejmuje także przejścia do `NO_ROUTE`.
 - `mean_route_segment_duration_s` — średni czas trwania spójnego segmentu tej samej znalezionej trasy.
 - `mean_isl_hops` — średnia liczba hopów przez inter-satellite links.
 - `mean_dijkstra_cpu_ms` — średni koszt CPU pojedynczego wyszukiwania trasy.
-- `max_queue_bytes` — największe zajęcie kolejki zaobserwowane w `queue_ascii.txt`; dostępne tylko dla benchmarków z ruchem pakietowym.
 
-## 6. Wykresy
 
-### Dostępność tras we wszystkich benchmarkach
+## 3. Analiza Wyników
 
-![Dostępność tras we wszystkich benchmarkach](figures/01_availability_by_case.png)
+### 3.1. Dostępność Tras i Stabilność Topologii
 
-Odsetek próbek, w których Dijkstra znalazł trasę między endpointami.
+Krytycznym parametrem sieci jest utrzymanie fizycznej ciągłości ścieżki routingu.
 
-### Średni RTT we wszystkich benchmarkach
+<figure>
+  <img src="figures/01_availability_by_case.png" alt="">
+  <figcaption><b>Wykres 1.</b> Odsetek próbek z sukcesem wyznaczoną trasą dla poszczególnych scenariuszy badawczych</figcaption>
+</figure>
 
-![Średni RTT we wszystkich benchmarkach](figures/02_mean_rtt_by_case.png)
+Konstelacje z odpowiednią gęstością węzłów (C, D, E) gwarantują 100% dostępność trasy. W skrajnie zredukowanych topologiach (A, B) dochodzi do przerw w łączności (stan `NO_ROUTE`).
 
-Średni RTT liczony tylko dla próbek, w których trasa istniała.
 
-### Częstotliwość zmian tras
+### 3.2. Wpływ Zagęszczenia Konstelacji na Opóźnienia (RTT)
 
-![Częstotliwość zmian tras](figures/03_route_changes_per_min.png)
+Aby w pełni zrozumieć wpływ architektury sieci na opóźnienia, należy przeanalizować średnie wartości RTT dla wszystkich przeprowadzonych scenariuszy.
 
-Częstotliwość zmian identyfikatora trasy lub przejść do stanu NO_ROUTE.
+<figure>
+  <img src="figures/02_mean_rtt_by_case.png" alt="">
+  <figcaption><b>Wykres 2.</b> Zestawienie średniego opóźnienia (Mean RTT) we wszystkich badanych konfiguracjach (liczone wyłącznie dla pomyślnie wyznaczonych tras)</figcaption>
+</figure>
 
-### Koszt obliczania tras
+<figure>
+  <img src="figures/05_mean_isl_hops.png" alt="">
+  <figcaption><b>Wykres 3.</b> Średnia liczba przeskoków międzysatelitarnych (ISL Hops) wymaganych do zestawienia połączenia</figcaption>
+</figure>
 
-![Koszt obliczania tras](figures/04_mean_dijkstra_cpu_ms.png)
+Powyższe wykresy wykazują powiązanie między gęstością konstelacji a długością ścieżki logicznej. Zmniejszenie liczby płaszczyzn (z 24 do 6 w C) wymusza na algorytmie routingu wykorzystywanie łączy okrężnych. Przekłada się to bezpośrednio na wzrost średniej liczby przeskoków (ISL hops) między satelitami. Każdy dodatkowy węzeł pośredni w ścieżce (hop) dodaje opóźnienie propagacyjne oraz czas przetwarzania pakietu, co wprost tłumaczy drastyczny wzrost średniego opóźnienia (Mean RTT) w rzadszych topologiach.
 
-Czas CPU mierzony przy wyszukiwaniu tras. Przy małych topologiach powinien być bardzo niski.
+Badania wpływu architektury (6, 12, 24 płaszczyzny) na opóźnienia zobrazowano na poniższych wykresach.
 
-### Średnia liczba hopów ISL
+<figure>
+  <img src="figures/06_C_NY_Seattle_rtt_timeseries.png" alt="">
+  <figcaption><b>Wykres 4.</b> Opóźnienie RTT w funkcji czasu dla połączenia NY-Seattle w różnych wariantach pokrycia</figcaption>
+</figure>
 
-![Średnia liczba hopów ISL](figures/05_mean_isl_hops.png)
+<figure>
+  <img src="figures/07_C_NY_Seattle_rtt_boxplot.png" alt="">
+  <figcaption><b>Wykres 5.</b> Rozkład statystyczny wartości RTT w zależności od liczby aktywnych płaszczyzn orbitalnych</figcaption>
+</figure>
 
-Pokazuje, czy trasy korzystają głównie z jednego satelity, czy z sieci inter-satellite links.
 
-### RTT w czasie: NY-Seattle
+Gęstość konstelacji bezpośrednio koreluje ze średnim opóźnieniem. Dla zredukowanej konstelacji (6 płaszczyzn), algorytm Dijkstry jest zmuszony wyznaczać ścieżki suboptymalne, korzystając z większej liczby łączy ISL o wyższym koszcie propagacyjnym. Skutkuje to zarówno podwyższoną wartością `mean_rtt_ms` (ok. 45 ms), jak i ogromnym rozstrzałem opóźnień widocznym na wykresie. Pełna konstelacja (24 płaszczyzny) optymalizuje trasę, drastycznie zmniejszając RTT do ok. 31 ms i stabilizując opóźnienie w czasie.
 
-![RTT w czasie: NY-Seattle](figures/06_C_NY_Seattle_rtt_timeseries.png)
+### 3.3. Obciążenie Routingu i Zmiany Tras
 
-Porównanie konfiguracji 6/12/24 płaszczyzn orbitalnych.
+Wyznaczenie nowej trasy w dynamicznym grafie generuje koszt w postaci zużycia CPU.
 
-### Rozkład RTT: NY-Seattle
+<figure>
+  <img src="figures/03_route_changes_per_min.png" alt="">
+  <figcaption><b>Wykres 6.</b> Liczba zmian ścieżek routingu na minutę</figcaption>
+</figure>
 
-![Rozkład RTT: NY-Seattle](figures/07_C_NY_Seattle_rtt_boxplot.png)
 
-Boxplot bez outlierów, liczony dla próbek z istniejącą trasą.
+<figure>
+  <img src="figures/04_mean_dijkstra_cpu_ms.png" alt="">
+  <figcaption><b>Wykres 7.</b> Średni koszt CPU (ms) jednorazowego przeliczenia tras w systemie</figcaption>
+</figure>
 
-### RTT w czasie: London-New York
 
-![RTT w czasie: London-New York](figures/08_D_London_NY_ping_rtt_timeseries.png)
+Konstelacje o pełnym zagęszczeniu (24 płaszczyzny) generują najwyższy narzut obliczeniowy dla algorytmu Dijkstry (ponad 30 ms per przeliczenie), a trasy ulegają zmianie bardzo często (ok. 3-4 razy na minutę).
 
-Benchmark z włączonym ruchem pakietowym i binlogiem kolejek.
+### 3.4. Analiza Kolejek
+ 
+Włączenie do symulacji przepływu pakietowego pozwoliło zbadać utylizację buforów satelit.
 
-### Wrażliwość na przepustowość ISL
+Konsekwencje przepełnienia kolejek stają się wyraźnie widoczne na poziomie opóźnień odczuwanych przez aplikacje końcowe. Aby zbadać ten wpływ, analizujemy scenariusz D, w którym ruch pomiarowy (ping) konkurował o pasmo z intensywnym ruchem pakietowym.
+<figure>
+  <img src="figures/08_D_London_NY_ping_rtt_timeseries.png" alt="">
+  <figcaption><b>Wykres 8.</b> Ewolucja opóźnienia RTT w czasie dla połączenia transatlantyckiego przy aktywnym obciążeniu sieciowym</figcaption>
+</figure>
 
-![Wrażliwość na przepustowość ISL](figures/09_E_isl_sensitivity.png)
+Wykres RTT dla scenariusza z ruchem pakietowym diametralnie różni się od gładkich wykresów z testów wyłącznie routingowych. Obserwowane tu ekstremalne i wysoce zmienne wahania (jitter) to efekt opóźnień kolejkowania (ang. queuing delay). Gdy pakiety wpadają do obciążonych buforów w satelitach, czas ich przetworzenia znacząco rośnie, degradując jakość transmisji danych wrażliwych na opóźnienia w czasie rzeczywistym.
 
-Porównanie średniego RTT dla różnych wartości --isl-mbps.
+## 4. Ograniczenia Zastosowanego Modelu
 
-### Maksymalne zajęcie kolejek
+Przy interpretacji wyników należy uwzględnić następujące ograniczenia symulatora:
 
-![Maksymalne zajęcie kolejek](figures/10_max_queue_by_case.png)
+1. Minimalistyczny scenariusz dwusatelitarny pełni funkcję testu poprawności kodu i nie obrazują rzeczywistych własności pokrycia systemu Starlink.
 
-Metryka wyciągnięta z plików queue_ascii.txt produkowanych przez getstat.sh.
 
-### Zajęcie kolejki w czasie
+2. Operujemy wyłącznie w oparciu o łącza międzysatelitarne (ISL), nie wykorzystując pośrednich, naziemnych stacji przekaźnikowych (Relay Stations), co może zawyżać obserwowane wartości RTT.
 
-![Zajęcie kolejki w czasie](figures/11_queue_timeseries_D_London_NY_12planes_ping.png)
 
-Pierwszy dostępny benchmark z kolejkami: D_London_NY_12planes_ping.
+3. Skrypty działające w trybie `routing-only` dostarczają cennych metryk geometrycznych, jednak ze względu na brak generowanego ruchu pakietowego nie nadają się do analizy przepustowości, utraty pakietów ani zjawisk kolejkowania.
 
-### Widoczność satelitów w sanity teście
 
-![Widoczność satelitów w sanity teście](figures/12_visibility_sanity_2sat.png)
+4. Częsta modyfikacja optymalnej ścieżki (Dijkstra) może negatywnie odbijać się na operacyjnej stabilności protokołów transportowych.
 
-Dystans endpointów do najbliższego satelity w konfiguracji 2-satelitarnej.
 
-## 7. Ograniczenia interpretacji
+## 5. Konkluzja
 
-- Benchmark z dwoma satelitami jest sanity testem kodu, a nie realistycznym modelem pokrycia Starlink.
-- W obecnej wersji benchmarki C/D/E używają ISL-i, ale nie implementują jeszcze gęstej siatki naziemnych relayów z artykułu.
-- Dla `routing-only` nie ma throughputu, strat ani kolejek, bo nie jest generowany ruch pakietowy.
-- RTT w tabelach jest liczone tylko dla momentów, w których istnieje trasa; dostępność należy interpretować razem z RTT.
-- Częste zmiany tras oznaczają, że trasa o niskiej latencji może być mniej stabilna operacyjnie.
+Symulacja `starlink-htsim` skutecznie dowiodła skomplikowanej zależności między dynamiką orbitalną a wydajnością protokołów komputerowych. Kluczowymi wyzwaniami w sieciach typu Starlink, są zarządzanie momentami *handoveru* przeciwdziałającymi uciążliwemu zjawisku jitteru, minimalizacja narzutu obliczeniowego przy bardzo częstych aktualizacjach tabel routingu, oraz implementacja nowoczesnych algorytmów *congestion control*, zdolnych sprawiedliwie alokować współdzielone, wąskie gardła w łączach ISL.
+
+Symulacja mogłaby zostać rozszerzona o obsługę naziemnych stacji przekaźnikowych (Relay Stations), co pozwoli na bardziej realistyczne odwzorowanie aktualnych faz wdrażania konstelacji Starlink.
